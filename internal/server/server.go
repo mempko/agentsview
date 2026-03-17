@@ -358,11 +358,13 @@ func (s *Server) Handler() http.Handler {
 	if bindAll {
 		bindAllIPs = localInterfaceIPs()
 	}
-	h := s.authMiddleware(
-		hostCheckMiddleware(
-			allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
-			corsMiddleware(
-				allowedOrigins, bindAll, s.cfg.Port, bindAllIPs, logMiddleware(s.mux),
+	h := cspMiddleware(s.cfg.Host, s.cfg.Port,
+		s.authMiddleware(
+			hostCheckMiddleware(
+				allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
+				corsMiddleware(
+					allowedOrigins, bindAll, s.cfg.Port, bindAllIPs, logMiddleware(s.mux),
+				),
 			),
 		),
 	)
@@ -390,6 +392,33 @@ func (s *Server) Handler() http.Handler {
 		})
 	}
 	return h
+}
+
+// cspMiddleware sets a Content-Security-Policy header on non-API
+// responses. The policy pins the exact host:port origin so that
+// even if Tauri's compile-time CSP uses a wildcard port, the
+// intersection narrows to the actual runtime port.
+func cspMiddleware(host string, port int, next http.Handler) http.Handler {
+	origin := fmt.Sprintf("http://%s:%d", host, port)
+	wsOrigin := fmt.Sprintf("ws://%s:%d", host, port)
+	policy := fmt.Sprintf(
+		"default-src 'self' %[1]s; "+
+			"script-src 'self' %[1]s; "+
+			"connect-src 'self' %[1]s %[2]s; "+
+			"img-src 'self' %[1]s data:; "+
+			"style-src 'self' %[1]s 'unsafe-inline'; "+
+			"font-src 'self' %[1]s data:; "+
+			"object-src 'none'; "+
+			"frame-ancestors 'none'; "+
+			"base-uri 'none'",
+		origin, wsOrigin,
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Security-Policy", policy)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // buildAllowedHosts returns the set of Host header values that

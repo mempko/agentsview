@@ -156,6 +156,87 @@ func TestMiddlewareTimeout(t *testing.T) {
 	}
 }
 
+func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		path      string
+		host      string
+		port      int
+		wantCSP   bool
+		wantParts []string
+	}{
+		{
+			name:    "SPA_root_gets_CSP",
+			path:    "/",
+			host:    "127.0.0.1",
+			port:    8081,
+			wantCSP: true,
+			wantParts: []string{
+				"http://127.0.0.1:8081",
+				"ws://127.0.0.1:8081",
+				"frame-ancestors 'none'",
+			},
+		},
+		{
+			name:    "SPA_subpath_gets_CSP",
+			path:    "/sessions/abc",
+			host:    "127.0.0.1",
+			port:    9090,
+			wantCSP: true,
+			wantParts: []string{
+				"http://127.0.0.1:9090",
+				"ws://127.0.0.1:9090",
+			},
+		},
+		{
+			name:    "API_route_no_CSP",
+			path:    "/api/v1/sessions",
+			host:    "127.0.0.1",
+			port:    8081,
+			wantCSP: false,
+		},
+		{
+			name:    "API_subpath_no_CSP",
+			path:    "/api/v1/stats",
+			host:    "127.0.0.1",
+			port:    8081,
+			wantCSP: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := cspMiddleware(tt.host, tt.port, inner)
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			csp := w.Header().Get("Content-Security-Policy")
+			if tt.wantCSP {
+				if csp == "" {
+					t.Fatal("expected CSP header, got empty")
+				}
+				for _, part := range tt.wantParts {
+					if !strings.Contains(csp, part) {
+						t.Errorf("CSP missing %q; got %q", part, csp)
+					}
+				}
+			} else {
+				if csp != "" {
+					t.Errorf("expected no CSP header on API route, got %q", csp)
+				}
+			}
+		})
+	}
+}
+
 func TestCORSMiddlewareMergesVaryHeader(t *testing.T) {
 	t.Parallel()
 
