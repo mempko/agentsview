@@ -358,7 +358,7 @@ func (s *Server) Handler() http.Handler {
 	if bindAll {
 		bindAllIPs = localInterfaceIPs()
 	}
-	h := cspMiddleware(s.cfg.Host, s.cfg.Port,
+	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.cfg.PublicOrigins,
 		s.authMiddleware(
 			hostCheckMiddleware(
 				allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
@@ -398,27 +398,76 @@ func (s *Server) Handler() http.Handler {
 // responses. The policy pins the exact host:port origin so that
 // even if Tauri's compile-time CSP uses a wildcard port, the
 // intersection narrows to the actual runtime port.
-func cspMiddleware(host string, port int, next http.Handler) http.Handler {
-	origin := fmt.Sprintf("http://%s:%d", host, port)
-	wsOrigin := fmt.Sprintf("ws://%s:%d", host, port)
-	policy := fmt.Sprintf(
-		"default-src 'self' %[1]s; "+
-			"script-src 'self' %[1]s; "+
-			"connect-src 'self' %[1]s %[2]s; "+
-			"img-src 'self' %[1]s data:; "+
-			"style-src 'self' %[1]s 'unsafe-inline'; "+
-			"font-src 'self' %[1]s data:; "+
-			"object-src 'none'; "+
-			"frame-ancestors 'none'; "+
-			"base-uri 'none'",
-		origin, wsOrigin,
-	)
+func cspMiddleware(host string, port int, publicOrigins []string, next http.Handler) http.Handler {
+	policy := buildCSPPolicy(host, port, publicOrigins)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Security-Policy", policy)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// buildCSPPolicy constructs the Content-Security-Policy string.
+// It uses the same loopback/bind-all logic as buildAllowedOrigins
+// to handle IPv6 bracketing, 0.0.0.0/:: normalization, and
+// public origins (proxy/TLS).
+func buildCSPPolicy(host string, port int, publicOrigins []string) string {
+	// Collect HTTP and WS origins using net.JoinHostPort for
+	// correct IPv6 bracket formatting.
+	httpSrcs := []string{"'self'"}
+	wsSrcs := []string{}
+
+	addOrigin := func(h string) {
+		for _, o := range httpOrigin(h, port) {
+			httpSrcs = append(httpSrcs, o)
+			wsSrcs = append(wsSrcs, strings.Replace(o, "http://", "ws://", 1))
+		}
+	}
+
+	addOrigin(host)
+	// Mirror buildAllowedOrigins: when binding to loopback,
+	// include the other loopback variant. When binding to all
+	// interfaces, include all loopback origins.
+	switch host {
+	case "127.0.0.1":
+		addOrigin("localhost")
+	case "localhost":
+		addOrigin("127.0.0.1")
+	case "0.0.0.0", "::":
+		addOrigin("127.0.0.1")
+		addOrigin("localhost")
+		addOrigin("::1")
+	case "::1":
+		addOrigin("127.0.0.1")
+		addOrigin("localhost")
+	}
+
+	for _, origin := range publicOrigins {
+		httpSrcs = append(httpSrcs, origin)
+		wsSrcs = append(wsSrcs,
+			strings.NewReplacer(
+				"https://", "wss://",
+				"http://", "ws://",
+			).Replace(origin),
+		)
+	}
+
+	httpList := strings.Join(httpSrcs, " ")
+	connectList := strings.Join(append(httpSrcs, wsSrcs...), " ")
+
+	return fmt.Sprintf(
+		"default-src %[1]s; "+
+			"script-src %[1]s; "+
+			"connect-src %[2]s; "+
+			"img-src %[1]s data:; "+
+			"style-src %[1]s 'unsafe-inline'; "+
+			"font-src %[1]s data:; "+
+			"object-src 'none'; "+
+			"frame-ancestors 'none'; "+
+			"base-uri 'none'",
+		httpList, connectList,
+	)
 }
 
 // buildAllowedHosts returns the set of Host header values that

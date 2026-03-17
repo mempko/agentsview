@@ -160,12 +160,13 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		path      string
-		host      string
-		port      int
-		wantCSP   bool
-		wantParts []string
+		name          string
+		path          string
+		host          string
+		port          int
+		publicOrigins []string
+		wantCSP       bool
+		wantParts     []string
 	}{
 		{
 			name:    "SPA_root_gets_CSP",
@@ -204,6 +205,44 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 			port:    8081,
 			wantCSP: false,
 		},
+		{
+			name:    "IPv6_loopback_brackets",
+			path:    "/",
+			host:    "::1",
+			port:    8081,
+			wantCSP: true,
+			wantParts: []string{
+				"http://[::1]:8081",
+				"ws://[::1]:8081",
+				// Also includes 127.0.0.1 variant
+				"http://127.0.0.1:8081",
+			},
+		},
+		{
+			name:    "BindAll_includes_loopback",
+			path:    "/",
+			host:    "0.0.0.0",
+			port:    8080,
+			wantCSP: true,
+			wantParts: []string{
+				"http://127.0.0.1:8080",
+				"ws://127.0.0.1:8080",
+				"http://localhost:8080",
+			},
+		},
+		{
+			name:          "PublicOrigin_included",
+			path:          "/",
+			host:          "127.0.0.1",
+			port:          8081,
+			publicOrigins: []string{"https://view.example.com"},
+			wantCSP:       true,
+			wantParts: []string{
+				"http://127.0.0.1:8081",
+				"https://view.example.com",
+				"wss://view.example.com",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -212,7 +251,7 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
-			handler := cspMiddleware(tt.host, tt.port, inner)
+			handler := cspMiddleware(tt.host, tt.port, tt.publicOrigins, inner)
 
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
