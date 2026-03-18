@@ -486,10 +486,9 @@ func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs ma
 			"script-src %[1]s; "+
 			"connect-src %[2]s; "+
 			"img-src %[1]s data:; "+
-			"style-src %[1]s 'unsafe-inline'; "+
-			"font-src %[1]s data:; "+
+			"style-src %[1]s 'unsafe-inline' https://fonts.googleapis.com; "+
+			"font-src %[1]s data: https://fonts.gstatic.com; "+
 			"object-src 'none'; "+
-			"frame-ancestors 'none'; "+
 			"base-uri 'none'",
 		resourceSrc, connectSrc,
 	)

@@ -181,7 +181,11 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 				"default-src 'self' http://127.0.0.1:8081",
 				"connect-src 'self' http://127.0.0.1:8081",
 				"ws://127.0.0.1:8081",
-				"frame-ancestors 'none'",
+				"style-src 'self' http://127.0.0.1:8081 'unsafe-inline' https://fonts.googleapis.com",
+				"font-src 'self' http://127.0.0.1:8081 data: https://fonts.gstatic.com",
+			},
+			wantAbsent: []string{
+				"frame-ancestors",
 			},
 		},
 		{
