@@ -183,9 +183,7 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 				"ws://127.0.0.1:8081",
 				"style-src 'self' http://127.0.0.1:8081 'unsafe-inline' https://fonts.googleapis.com",
 				"font-src 'self' http://127.0.0.1:8081 data: https://fonts.gstatic.com",
-			},
-			wantAbsent: []string{
-				"frame-ancestors",
+				"frame-ancestors 'none'",
 			},
 		},
 		{
@@ -298,6 +296,10 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 					if strings.Contains(csp, absent) {
 						t.Errorf("CSP should not contain %q; got %q", absent, csp)
 					}
+				}
+				xfo := w.Header().Get("X-Frame-Options")
+				if xfo != "DENY" {
+					t.Errorf("expected X-Frame-Options DENY, got %q", xfo)
 				}
 			} else {
 				if csp != "" {

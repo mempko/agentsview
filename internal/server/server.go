@@ -403,6 +403,7 @@ func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Security-Policy", policy)
+			w.Header().Set("X-Frame-Options", "DENY")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -489,7 +490,8 @@ func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs ma
 			"style-src %[1]s 'unsafe-inline' https://fonts.googleapis.com; "+
 			"font-src %[1]s data: https://fonts.gstatic.com; "+
 			"object-src 'none'; "+
-			"base-uri 'none'",
+			"base-uri 'none'; "+
+			"frame-ancestors 'none'",
 		resourceSrc, connectSrc,
 	)
 }

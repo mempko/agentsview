@@ -632,9 +632,17 @@ fn setup_menu(app: &mut App) -> Result<(), DynError> {
 /// webview in a frozen state where it renders but does not process
 /// input events.
 fn restore_webview_focus(handle: &AppHandle) {
-    if let Some(window) = handle.get_webview_window("main") {
-        let _ = window.set_focus();
-    }
+    let handle = handle.clone();
+    // Delay focus restoration so the native GTK dialog has time to
+    // fully close and release window focus. Without this, set_focus()
+    // fires while the dialog still owns focus and the webview stays
+    // unresponsive.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+    });
 }
 
 static UPDATE_CHECK_ACTIVE: AtomicBool = AtomicBool::new(false);
