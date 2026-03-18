@@ -165,17 +165,21 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 		host          string
 		port          int
 		publicOrigins []string
+		bindAllIPs    map[string]bool
 		wantCSP       bool
 		wantParts     []string
+		wantAbsent    []string // substrings that must NOT appear
 	}{
 		{
-			name:    "SPA_root_gets_CSP",
+			name:    "SPA_root_gets_CSP_with_pinned_origin",
 			path:    "/",
 			host:    "127.0.0.1",
 			port:    8081,
 			wantCSP: true,
 			wantParts: []string{
-				"http://127.0.0.1:8081",
+				"script-src 'self' http://127.0.0.1:8081",
+				"default-src 'self' http://127.0.0.1:8081",
+				"connect-src 'self' http://127.0.0.1:8081",
 				"ws://127.0.0.1:8081",
 				"frame-ancestors 'none'",
 			},
@@ -212,35 +216,54 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 			port:    8081,
 			wantCSP: true,
 			wantParts: []string{
-				"http://[::1]:8081",
+				"script-src 'self' http://[::1]:8081",
+				"connect-src",
 				"ws://[::1]:8081",
-				// Also includes 127.0.0.1 variant
 				"http://127.0.0.1:8081",
 			},
 		},
 		{
-			name:    "BindAll_includes_loopback",
-			path:    "/",
-			host:    "0.0.0.0",
-			port:    8080,
+			name: "BindAll_connect_src_includes_LAN_IPs",
+			path: "/",
+			host: "0.0.0.0",
+			port: 8080,
+			bindAllIPs: map[string]bool{
+				"127.0.0.1":   true,
+				"::1":         true,
+				"192.168.1.5": true,
+			},
 			wantCSP: true,
 			wantParts: []string{
+				// Pinned origin in all directives
+				"script-src 'self' http://0.0.0.0:8080",
+				// LAN IPs in connect-src
+				"http://192.168.1.5:8080",
+				"ws://192.168.1.5:8080",
 				"http://127.0.0.1:8080",
-				"ws://127.0.0.1:8080",
 				"http://localhost:8080",
+			},
+			wantAbsent: []string{
+				// LAN IPs must NOT be in script-src
+				"script-src 'self' http://0.0.0.0:8080 http://192",
 			},
 		},
 		{
-			name:          "PublicOrigin_included",
+			name:          "PublicOrigin_in_connect_src_only",
 			path:          "/",
 			host:          "127.0.0.1",
 			port:          8081,
 			publicOrigins: []string{"https://view.example.com"},
 			wantCSP:       true,
 			wantParts: []string{
-				"http://127.0.0.1:8081",
+				// Pinned origin in script-src
+				"script-src 'self' http://127.0.0.1:8081",
+				// Public origin in connect-src
 				"https://view.example.com",
 				"wss://view.example.com",
+			},
+			wantAbsent: []string{
+				// Public origin must NOT be in script-src
+				"script-src 'self' http://127.0.0.1:8081 https://view",
 			},
 		},
 	}
@@ -251,7 +274,7 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
-			handler := cspMiddleware(tt.host, tt.port, tt.publicOrigins, inner)
+			handler := cspMiddleware(tt.host, tt.port, tt.publicOrigins, tt.bindAllIPs, inner)
 
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
@@ -265,6 +288,11 @@ func TestCSPMiddlewareSetsHeaderOnNonAPIRoutes(t *testing.T) {
 				for _, part := range tt.wantParts {
 					if !strings.Contains(csp, part) {
 						t.Errorf("CSP missing %q; got %q", part, csp)
+					}
+				}
+				for _, absent := range tt.wantAbsent {
+					if strings.Contains(csp, absent) {
+						t.Errorf("CSP should not contain %q; got %q", absent, csp)
 					}
 				}
 			} else {

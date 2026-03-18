@@ -358,7 +358,7 @@ func (s *Server) Handler() http.Handler {
 	if bindAll {
 		bindAllIPs = localInterfaceIPs()
 	}
-	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.cfg.PublicOrigins,
+	h := cspMiddleware(s.cfg.Host, s.cfg.Port, s.cfg.PublicOrigins, bindAllIPs,
 		s.authMiddleware(
 			hostCheckMiddleware(
 				allowedHosts, bindAll, s.cfg.Port, bindAllIPs,
@@ -398,8 +398,8 @@ func (s *Server) Handler() http.Handler {
 // responses. The policy pins the exact host:port origin so that
 // even if Tauri's compile-time CSP uses a wildcard port, the
 // intersection narrows to the actual runtime port.
-func cspMiddleware(host string, port int, publicOrigins []string, next http.Handler) http.Handler {
-	policy := buildCSPPolicy(host, port, publicOrigins)
+func cspMiddleware(host string, port int, publicOrigins []string, bindAllIPs map[string]bool, next http.Handler) http.Handler {
+	policy := buildCSPPolicy(host, port, publicOrigins, bindAllIPs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Security-Policy", policy)
@@ -412,40 +412,57 @@ func cspMiddleware(host string, port int, publicOrigins []string, next http.Hand
 // It uses the same loopback/bind-all logic as buildAllowedOrigins
 // to handle IPv6 bracketing, 0.0.0.0/:: normalization, and
 // public origins (proxy/TLS).
-func buildCSPPolicy(host string, port int, publicOrigins []string) string {
-	// Collect HTTP and WS origins using net.JoinHostPort for
-	// correct IPv6 bracket formatting.
-	httpSrcs := []string{"'self'"}
-	wsSrcs := []string{}
+//
+// The server's own origin (host:port) is included explicitly in
+// all directives because WebKitGTK in a Tauri webview may not
+// resolve 'self' to the Go server origin after navigating from
+// tauri://localhost. Public origins and LAN IPs are restricted
+// to connect-src only to limit the script execution surface.
+func buildCSPPolicy(host string, port int, publicOrigins []string, bindAllIPs map[string]bool) string {
+	// serverOrigin is the pinned http origin for the configured
+	// host:port, used in all directives so resources load
+	// correctly regardless of how the webview resolves 'self'.
+	serverOrigin := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 
-	addOrigin := func(h string) {
+	// connectSrcs collects additional origins for connect-src
+	// (fetch, SSE, WebSocket) — loopback variants, LAN IPs,
+	// and public/proxy origins.
+	connectHTTP := []string{}
+	connectWS := []string{}
+
+	addConnectOrigin := func(h string) {
 		for _, o := range httpOrigin(h, port) {
-			httpSrcs = append(httpSrcs, o)
-			wsSrcs = append(wsSrcs, strings.Replace(o, "http://", "ws://", 1))
+			connectHTTP = append(connectHTTP, o)
+			connectWS = append(connectWS, strings.Replace(o, "http://", "ws://", 1))
 		}
 	}
 
-	addOrigin(host)
 	// Mirror buildAllowedOrigins: when binding to loopback,
 	// include the other loopback variant. When binding to all
-	// interfaces, include all loopback origins.
+	// interfaces, include all loopback origins plus every
+	// concrete interface IP.
 	switch host {
 	case "127.0.0.1":
-		addOrigin("localhost")
+		addConnectOrigin("localhost")
 	case "localhost":
-		addOrigin("127.0.0.1")
+		addConnectOrigin("127.0.0.1")
 	case "0.0.0.0", "::":
-		addOrigin("127.0.0.1")
-		addOrigin("localhost")
-		addOrigin("::1")
+		addConnectOrigin("127.0.0.1")
+		addConnectOrigin("localhost")
+		addConnectOrigin("::1")
+		for ip := range bindAllIPs {
+			if ip != "127.0.0.1" && ip != "::1" {
+				addConnectOrigin(ip)
+			}
+		}
 	case "::1":
-		addOrigin("127.0.0.1")
-		addOrigin("localhost")
+		addConnectOrigin("127.0.0.1")
+		addConnectOrigin("localhost")
 	}
 
 	for _, origin := range publicOrigins {
-		httpSrcs = append(httpSrcs, origin)
-		wsSrcs = append(wsSrcs,
+		connectHTTP = append(connectHTTP, origin)
+		connectWS = append(connectWS,
 			strings.NewReplacer(
 				"https://", "wss://",
 				"http://", "ws://",
@@ -453,8 +470,16 @@ func buildCSPPolicy(host string, port int, publicOrigins []string) string {
 		)
 	}
 
-	httpList := strings.Join(httpSrcs, " ")
-	connectList := strings.Join(append(httpSrcs, wsSrcs...), " ")
+	// resource-src: 'self' + pinned server origin (for all resource types)
+	resourceSrc := "'self' " + serverOrigin
+
+	// connect-src: resource-src + loopback/LAN/public origins + ws variants
+	connectParts := []string{resourceSrc}
+	wsOrigin := "ws://" + net.JoinHostPort(host, strconv.Itoa(port))
+	connectParts = append(connectParts, wsOrigin)
+	connectParts = append(connectParts, connectHTTP...)
+	connectParts = append(connectParts, connectWS...)
+	connectSrc := strings.Join(connectParts, " ")
 
 	return fmt.Sprintf(
 		"default-src %[1]s; "+
@@ -466,7 +491,7 @@ func buildCSPPolicy(host string, port int, publicOrigins []string) string {
 			"object-src 'none'; "+
 			"frame-ancestors 'none'; "+
 			"base-uri 'none'",
-		httpList, connectList,
+		resourceSrc, connectSrc,
 	)
 }
 
