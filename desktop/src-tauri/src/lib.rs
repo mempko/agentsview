@@ -627,6 +627,16 @@ fn setup_menu(app: &mut App) -> Result<(), DynError> {
     Ok(())
 }
 
+/// Restore input focus to the main webview after a native GTK dialog
+/// is dismissed. On Linux/WebKitGTK, native dialogs can leave the
+/// webview in a frozen state where it renders but does not process
+/// input events.
+fn restore_webview_focus(handle: &AppHandle) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.set_focus();
+    }
+}
+
 static UPDATE_CHECK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // Guard that clears UPDATE_CHECK_ACTIVE on drop, ensuring the
@@ -659,11 +669,12 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
         .is_err()
     {
         if !silent {
+            let h = handle.clone();
             handle
                 .dialog()
                 .message("An update check is already in progress.")
                 .title("Update Check")
-                .show(|_| {});
+                .show(move |_| restore_webview_focus(&h));
         }
         return;
     }
@@ -674,11 +685,12 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
         Err(err) => {
             eprintln!("[agentsview] updater unavailable: {err}");
             if !silent {
+                let h = handle.clone();
                 handle
                     .dialog()
                     .message("Could not check for updates. The updater is not configured.")
                     .title("Update Check")
-                    .show(|_| {});
+                    .show(move |_| restore_webview_focus(&h));
             }
             return;
         }
@@ -689,11 +701,12 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
         Err(err) => {
             eprintln!("[agentsview] update check failed: {err}");
             if !silent {
+                let h = handle.clone();
                 handle
                     .dialog()
                     .message("Could not check for updates. Please try again later.")
                     .title("Update Check")
-                    .show(|_| {});
+                    .show(move |_| restore_webview_focus(&h));
             }
             return;
         }
@@ -701,11 +714,12 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
 
     let Some(update) = update else {
         if !silent {
+            let h = handle.clone();
             handle
                 .dialog()
                 .message("You're running the latest version.")
                 .title("No Updates Available")
-                .show(|_| {});
+                .show(move |_| restore_webview_focus(&h));
         }
         return;
     };
@@ -727,6 +741,7 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
 
     if let Err(err) = update.download_and_install(|_, _| {}, || {}).await {
         eprintln!("[agentsview] update install failed: {err}");
+        let h = handle.clone();
         handle
             .dialog()
             .message(
@@ -734,7 +749,7 @@ async fn check_for_updates(handle: &AppHandle, silent: bool) {
                  Please try downloading manually from the releases page.",
             )
             .title("Update Failed")
-            .show(|_| {});
+            .show(move |_| restore_webview_focus(&h));
         return;
     }
 
@@ -757,12 +772,14 @@ async fn dialog_confirm(
     message: &str,
 ) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let h = handle.clone();
     handle
         .dialog()
         .message(message)
         .title(title)
         .buttons(MessageDialogButtons::OkCancel)
         .show(move |confirmed| {
+            restore_webview_focus(&h);
             let _ = tx.send(confirmed);
         });
     rx.await.unwrap_or(false)
